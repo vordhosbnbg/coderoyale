@@ -438,7 +438,7 @@ public:
         {
             DBG_INFO("[STRAT] Empty sites exist. We must expand.");
 
-            if(_friendlyTeam.barracksArchers.size() + _friendlyTeam.barracksKnights.size() < 4)
+            if(_friendlyTeam.barracksArchers.size() + _friendlyTeam.barracksKnights.size() < (_gold / 50))
             {
                 // sort the empty places by distance from the queen
                 std::sort(_emptySites.begin(), _emptySites.end(),

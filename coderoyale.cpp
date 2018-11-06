@@ -30,14 +30,17 @@ enum class UnitType
 {
     KNIGHT=0,
     ARCHER=1,
-    QUEEN=2
+    GIANT=2,
+    QUEEN=3
 };
 
 enum class StructureType
 {
     EMPTY_SITE=0,
     BARRACKS_KNIGHT=1,
-    BARRACKS_ARCHER=2
+    BARRACKS_ARCHER=2,
+    BARRACKS_GIANT=3,
+    TOWER=4
 };
 
 
@@ -48,9 +51,13 @@ inline std::string structureTypeToString(StructureType sType)
         case StructureType::EMPTY_SITE:
             return "EMPTY_SITE";
         case StructureType::BARRACKS_KNIGHT:
-            return "BARRACKS_KNIGHT";
+            return "BARRACKS-KNIGHT";
         case StructureType::BARRACKS_ARCHER:
-            return "BARRACKS_ARCHER";
+            return "BARRACKS-ARCHER";
+        case StructureType::BARRACKS_GIANT:
+            return "BARRACKS-GIANT";
+        case StructureType::TOWER:
+            return "TOWER";
     }
     return "";
 }
@@ -63,6 +70,8 @@ inline std::string unitTypeToString(UnitType uType)
             return "KNIGHT";
         case UnitType::ARCHER:
             return "ARCHER";
+        case UnitType::GIANT:
+            return "GIANT";
         case UnitType::QUEEN:
             return "QUEEN";
     }
@@ -148,6 +157,20 @@ public:
     virtual ~EmptySite(){}
 };
 
+class Tower : public Structure
+{
+public:
+    Tower(const Position& pos, int radius, int team, int health, int attackRadius, int siteId) :
+        Structure(pos, radius, team, StructureType::TOWER, siteId), _health(health), _attackRadius(attackRadius) {}
+    virtual ~Tower(){}
+
+    inline int getHealth() const { return _health; }
+
+protected:
+    int _health;
+    int _attackRadius;
+};
+
 class Barracks : public Structure
 {
 public:
@@ -177,6 +200,14 @@ public:
     virtual ~BarracksKnights(){}
 };
 
+class BarracksGiants : public Barracks
+{
+public:
+    BarracksGiants(const Position& pos, int radius, int team, int siteId, int turnsUntilTrain) :
+        Barracks(pos, radius, team, StructureType::BARRACKS_GIANT, siteId, turnsUntilTrain) {}
+    virtual ~BarracksGiants(){}
+};
+
 
 
 std::shared_ptr<Structure> Structure::createStructureFromInput(const SiteInfoMap& siteInfo)
@@ -185,10 +216,10 @@ std::shared_ptr<Structure> Structure::createStructureFromInput(const SiteInfoMap
     int siteId;
     int ignore1; // used in future leagues
     int ignore2; // used in future leagues
-    int structureType; // -1 = No structure, 2 = Barracks
+    int structureType; // -1 = No structure, 1 = Tower, 2 = Barracks
     int owner; // -1 = No structure, 0 = Friendly, 1 = Enemy
-    int param1; // in case of barracks - turns until train
-    int param2; // in case of barracks - barrack type - 0 for KNIGHT, 1 for ARCHER
+    int param1; // in case of barracks - turns until train, in case of tower - hp
+    int param2; // in case of barracks - barrack type - 0 for KNIGHT, 1 for ARCHER, in case of tower - attack radius
 
     std::cin >> siteId >> ignore1 >> ignore2 >> structureType >> owner >> param1 >> param2; std::cin.ignore();
     DBG_INPUT(siteId << " " << ignore1 << " " << ignore2 << " " << structureType << " " << owner << " " << param1 << " " << param2);
@@ -204,16 +235,24 @@ std::shared_ptr<Structure> Structure::createStructureFromInput(const SiteInfoMap
             case -1:
                 retVal = std::make_shared<EmptySite>(pos, radius, siteId);
                 break;
-            case 2:
-                if(param2 == 0)
-                {
-                    retVal = std::make_shared<BarracksKnights>(pos, radius, owner, siteId, param1);
-                }
-                else if(param2 == 1)
-                {
-                    retVal = std::make_shared<BarracksArchers>(pos, radius, owner, siteId, param1);
-                }
+            case 1:
+                retVal = std::make_shared<Tower>(pos, radius, owner, param1, param2, siteId);
                 break;
+            case 2:
+            {
+                switch (param2)
+                {
+                    case 0:
+                        retVal = std::make_shared<BarracksKnights>(pos, radius, owner, siteId, param1);
+                        break;
+                    case 1:
+                        retVal = std::make_shared<BarracksArchers>(pos, radius, owner, siteId, param1);
+                        break;
+                    case 2:
+                        retVal = std::make_shared<BarracksGiants>(pos, radius, owner, siteId, param1);
+                        break;
+                }
+            }
         }
     }
     return retVal;
@@ -261,6 +300,13 @@ public:
     virtual ~Knight(){}
 };
 
+class Giant : public Unit
+{
+public:
+    Giant(const Position& pos, int team, int health) : Unit(pos, 0, team, UnitType::GIANT, health) {}
+    virtual ~Giant(){}
+};
+
 std::shared_ptr<Unit> Unit::createUnitFromInput()
 {
     std::shared_ptr<Unit> retVal;
@@ -282,6 +328,9 @@ std::shared_ptr<Unit> Unit::createUnitFromInput()
             break;
         case 1:
             retVal = std::make_shared<Archer>(pos, owner, health);
+            break;
+        case 2:
+            retVal = std::make_shared<Giant>(pos, owner, health);
             break;
         default:
             DBG_INFO("[Unit::createUnitFromInput] Unexpected unit type: " << unitTypeInt);
@@ -309,8 +358,11 @@ struct TeamState
     {
         knights.reserve(20);
         archers.reserve(20);
-        barracksArchers.reserve(10);
-        barracksKnights.reserve(10);
+        giants.reserve(20);
+        barracksArchers.reserve(20);
+        barracksKnights.reserve(20);
+        barracksGiants.reserve(20);
+        towers.reserve(20);
     }
     void reset()
     {
@@ -323,14 +375,17 @@ struct TeamState
     std::shared_ptr<Queen> queen;
     std::vector<std::shared_ptr<Knight>> knights;
     std::vector<std::shared_ptr<Archer>> archers;
+    std::vector<std::shared_ptr<Archer>> giants;
     std::vector<std::shared_ptr<BarracksKnights>> barracksKnights;
     std::vector<std::shared_ptr<BarracksArchers>> barracksArchers;
+    std::vector<std::shared_ptr<BarracksArchers>> barracksGiants;
+    std::vector<std::shared_ptr<Tower>> towers;
 };
 
 class GameContext
 {
 public:
-    GameContext() : _gold(0), _touchedSite(-1), _currentTurn(0), _queenOrdered(false), _saveGold(false) { _emptySites.reserve(30);}
+    GameContext() : _gold(0), _touchedSite(-1), _currentTurn(0), _queenOrdered(false), _saveGold(0) { _emptySites.reserve(30);}
 
     inline void readInit()
     {
@@ -347,7 +402,7 @@ public:
         }
     }
     inline int getNumSites() { return _sInfo.size(); }
-
+    inline int getAvailableGold() { return _gold - _saveGold; }
     inline void readTurnInput()
     {
         DBG_INFO("[INPUT] Starting input parsing.");
@@ -425,41 +480,62 @@ public:
 
     inline void queenWAIT() { std::cout << "WAIT" << std::endl; _queenOrdered = true; }
     inline void queenMOVE(const Position& pos) { std::cout << "MOVE " << pos.x << " " << pos.y << std::endl; _queenOrdered = true; }
-    inline void queenBUILD(int siteId, bool archers = false)
+    inline void queenBUILD(int siteId, StructureType sType)
     {
-        std::cout << "BUILD " << siteId << " BARRACKS-" << (archers ? "ARCHER" : "KNIGHT") << std::endl; _queenOrdered = true;
+        std::cout << "BUILD " << siteId << " " << structureTypeToString(sType) << std::endl;
+        _queenOrdered = true;
     }
 
 
 
     inline void takeAction()
     {
+        constexpr int avgGoldPerBarracks = 60;
+        constexpr int nbEnemyTowersTriggerGiant = 4;
+        constexpr int nbFriendlyTowersMax = 4;
+        constexpr int priceOfArchers = 100;
+        constexpr int priceOfKnights = 80;
+        constexpr int priceOfGiant = 140;
+
+        _queenOrdered = false;
+        _saveGold = 0;
         if(!_emptySites.empty())
         {
             DBG_INFO("[STRAT] Empty sites exist. We must expand.");
 
-            if(_friendlyTeam.barracksArchers.size() + _friendlyTeam.barracksKnights.size() < (_gold / 50))
+            // sort the empty places by distance from the queen
+            DBG_INFO("[STRAT] Sorting empty sites by distance to our queen...");
+            std::sort(_emptySites.begin(), _emptySites.end(),
+                      [&](const std::shared_ptr<EmptySite>& a,
+                      const std::shared_ptr<EmptySite>& b) -> bool
             {
-                // sort the empty places by distance from the queen
-                std::sort(_emptySites.begin(), _emptySites.end(),
-                          [&](const std::shared_ptr<EmptySite>& a,
-                          const std::shared_ptr<EmptySite>& b) -> bool
-                {
-                    return _friendlyTeam.queen->distanceTo(*a) > _friendlyTeam.queen->distanceTo(*b);
-                });
+                return _friendlyTeam.queen->distanceTo(*a) > _friendlyTeam.queen->distanceTo(*b);
+            });
 
-                bool buildArchers = false;
+            if(_friendlyTeam.barracksArchers.size() + _friendlyTeam.barracksKnights.size() < (_gold / avgGoldPerBarracks))
+            {
+                StructureType newBarracksType = StructureType::TOWER;
                 if(_friendlyTeam.barracksArchers.empty())
                 {
                     DBG_INFO("[STRAT] No archer barracks - let's build some.");
-                    buildArchers = true;
+                    newBarracksType = StructureType::BARRACKS_ARCHER;
+                }
+                else if(_enemyTeam.towers.size() > nbEnemyTowersTriggerGiant)
+                {
+                    DBG_INFO("[STRAT] Enemy team has more than " << nbEnemyTowersTriggerGiant << " towers - lets create some giant barracks.");
+                    newBarracksType = StructureType::BARRACKS_GIANT;
                 }
                 else
                 {
-                    DBG_INFO("[STRAT] We have archer barracks, so let's make some knights barracks.");
+                    DBG_INFO("[STRAT] We have enough money so let's make some knights barracks.");
+                    newBarracksType = StructureType::BARRACKS_KNIGHT;
                 }
 
-                queenBUILD(_emptySites.back()->getSiteId(), buildArchers);
+                queenBUILD(_emptySites.back()->getSiteId(), newBarracksType);
+            }
+            else if(_friendlyTeam.towers.size() < nbFriendlyTowersMax)
+            {
+                queenBUILD(_emptySites.back()->getSiteId(), StructureType::TOWER);
             }
             else
             {
@@ -468,29 +544,56 @@ public:
                 queenMOVE(_friendlyTeam.barracksArchers[0]->getPosition());
             }
         }
+        else
+        {
+            DBG_INFO("[STRAT] We have enough barracks let's avoid those enemy knights");
+
+            queenMOVE(_friendlyTeam.barracksArchers[0]->getPosition());
+        }
 
         if(!_queenOrdered)
         {
             queenWAIT();
         }
 
-        DBG_INFO("[STRAT] Current gold: " << _gold);
+        DBG_INFO("[STRAT] Evaluating training opportunities - current gold: " << _gold);
         {
             std::vector<int> barracksToTrain;
-            barracksToTrain.reserve(_friendlyTeam.barracksArchers.size()+_friendlyTeam.barracksKnights.size());
+            barracksToTrain.reserve(_friendlyTeam.barracksArchers.size()+_friendlyTeam.barracksKnights.size()+_friendlyTeam.barracksGiants.size());
 
-            if(_gold > 80)
+            if(_gold > priceOfKnights)
             {
                 DBG_INFO("[STRAT] We have at least 80 gold - we can train units");
-                bool archersExpiringSoon = !_friendlyTeam.archers.empty() && _friendlyTeam.archers[0]->getHealth() < 20;
-                if(archersExpiringSoon && _gold < 100)
+
+                int averageHealthArchers = 0;
+                for(const std::shared_ptr<Archer>& archerPtr : _friendlyTeam.archers)
+                {
+                    averageHealthArchers+= archerPtr->getHealth();
+                }
+                if(_friendlyTeam.archers.size() > 0)
+                {
+                    averageHealthArchers /= _friendlyTeam.archers.size();
+                    DBG_INFO("[STRAT] Average health of archers - " << averageHealthArchers);
+                }
+                else
+                {
+                    averageHealthArchers = 100;
+                }
+                bool archersExpiringSoon = !_friendlyTeam.archers.empty() && averageHealthArchers < 30;
+                bool needArchers = _friendlyTeam.archers.size() < 4 || archersExpiringSoon;
+                bool needGiants = !_friendlyTeam.giants.empty() && _enemyTeam.towers.size() > 4;
+                if(needArchers && getAvailableGold() < priceOfArchers)
                 {
                     DBG_INFO("[STRAT] We need to build archers soon - let's save some gold.");
-                    _saveGold = true;
+                    _saveGold += priceOfArchers;
+                }
+                if(needGiants && getAvailableGold() < priceOfGiant)
+                {
+                    _saveGold += priceOfGiant;
                 }
 
-                if((_friendlyTeam.archers.empty() || archersExpiringSoon) &&
-                    !_friendlyTeam.barracksArchers.empty() && _gold > 100)
+                if((needArchers) &&
+                    !_friendlyTeam.barracksArchers.empty() && _gold > priceOfArchers)
                 {
                     DBG_INFO("[STRAT] We have archers barracks and don't have archers - let's build some...");
                     if(_friendlyTeam.barracksArchers[0]->getTurnsUntilTrain() > 0)
@@ -500,18 +603,32 @@ public:
                     else
                     {
                         barracksToTrain.emplace_back(_friendlyTeam.barracksArchers[0]->getSiteId());
-                        _gold -= 100;
+                        _gold -= priceOfArchers;
+                    }
+                }
+                if(needGiants &&
+                   !_friendlyTeam.barracksGiants.empty() && _gold > priceOfGiant)
+                {
+                    DBG_INFO("[STRAT] We have giants barracks and don't have giants - let's build some...");
+                    if(_friendlyTeam.barracksGiants[0]->getTurnsUntilTrain() > 0)
+                    {
+                        DBG_INFO("[STRAT] We have to wait to train giants for " << _friendlyTeam.barracksGiants[0]->getTurnsUntilTrain() << " more turns.");
+                    }
+                    else
+                    {
+                        barracksToTrain.emplace_back(_friendlyTeam.barracksGiants[0]->getSiteId());
+                        _gold -= priceOfGiant;
                     }
                 }
 
                 for(std::shared_ptr<Barracks> currentBarracks : _friendlyTeam.barracksKnights)
                 {
-                    if(_saveGold)
+                    if(_gold < _saveGold)
                     {
-                        DBG_INFO("[STRAT] We need money for archers - pause training of knights.");
+                        DBG_INFO("[STRAT] We need money for archers/giants - pause training of knights and try to save.");
                         break;
                     }
-                    if(_gold < 80)
+                    if(_gold < priceOfKnights)
                     {
                         DBG_INFO("[STRAT] No more money for training knights.");
                         break;
@@ -523,7 +640,7 @@ public:
                     }
 
                     barracksToTrain.emplace_back(currentBarracks->getSiteId());
-                    _gold -= 80;
+                    _gold -= priceOfKnights;
                     DBG_INFO("[STRAT] We have money for kingts - lets do this shit!");
                 }
 
@@ -568,7 +685,7 @@ private:
     TeamState _enemyTeam;
     int _currentTurn;
     bool _queenOrdered;
-    bool _saveGold;
+    int _saveGold;
 };
 
 int main()

@@ -52,6 +52,7 @@ inline std::string structureTypeToString(StructureType sType)
         case StructureType::BARRACKS_ARCHER:
             return "BARRACKS_ARCHER";
     }
+    return "";
 }
 
 inline std::string unitTypeToString(UnitType uType)
@@ -100,10 +101,12 @@ public:
 
     inline const Position& getPosition() const { return _pos; }
     inline int getRadius() const { return _radius; }
-private:
+protected:
     Position _pos;
     int _radius;
 };
+
+
 
 
 struct StructureInitialInfo
@@ -124,12 +127,14 @@ public:
         _siteId(siteId) {}
 
     virtual ~Structure(){}
+
+    void print(){ DBG_INFO("[S] - (" << _pos.x << "," << _pos.y << "), radius: " << _radius << ", id: " << _siteId << ", team: " << _team << ", type: " << structureTypeToString(_sType)); }
     static std::shared_ptr<Structure> createStructureFromInput(const SiteInfoMap& siteInfo);
 
     inline StructureType getType() const { return _sType; }
     inline int getTeam() const { return _team; }
     inline int getSiteId() const { return _siteId; }
-private:
+protected:
     StructureType _sType;
     int _team;
     int _siteId;
@@ -186,6 +191,7 @@ std::shared_ptr<Structure> Structure::createStructureFromInput(const SiteInfoMap
     int param2; // in case of barracks - barrack type - 0 for KNIGHT, 1 for ARCHER
 
     std::cin >> siteId >> ignore1 >> ignore2 >> structureType >> owner >> param1 >> param2; std::cin.ignore();
+    DBG_INPUT(siteId << " " << ignore1 << " " << ignore2 << " " << structureType << " " << owner << " " << param1 << " " << param2);
 
     SiteInfoMap::const_iterator it = siteInfo.find(siteId);
 
@@ -264,6 +270,7 @@ std::shared_ptr<Unit> Unit::createUnitFromInput()
     int unitTypeInt; // -1 = QUEEN, 0 = KNIGHT, 1 = ARCHER
     int health;
     std::cin >> x >> y >> owner >> unitTypeInt >> health; std::cin.ignore();
+    DBG_INPUT(x << " " << y << " " << owner << " " << unitTypeInt << " " << health);
     Position pos(x,y);
     switch (unitTypeInt)
     {
@@ -308,6 +315,10 @@ struct TeamState
     void reset()
     {
         queen.reset();
+        knights.clear();
+        archers.clear();
+        barracksArchers.clear();
+        barracksKnights.clear();
     }
     std::shared_ptr<Queen> queen;
     std::vector<std::shared_ptr<Knight>> knights;
@@ -319,17 +330,19 @@ struct TeamState
 class GameContext
 {
 public:
-    GameContext() : _gold(0), _touchedSite(-1), _currentTurn(0) {}
+    GameContext() : _gold(0), _touchedSite(-1), _currentTurn(0), _queenOrdered(false), _saveGold(false) { _emptySites.reserve(30);}
 
     inline void readInit()
     {
         int numSites;
         std::cin >> numSites; std::cin.ignore();
+        DBG_INPUT(numSites);
         for(auto cntSite = 0 ; cntSite < numSites ; ++cntSite)
         {
             int siteId;
             StructureInitialInfo sInfo;
             std::cin >> siteId >> sInfo.pos.x >> sInfo.pos.y >> sInfo.radius; std::cin.ignore();
+            DBG_INPUT(siteId << " " << sInfo.pos.x << " " << sInfo.pos.y << " " << sInfo.radius);
             _sInfo[siteId] = sInfo;
         }
     }
@@ -337,39 +350,58 @@ public:
 
     inline void readTurnInput()
     {
-        std::cin >> _gold; std::cin.ignore();
-        std::cin >> _touchedSite; std::cin.ignore();
+        DBG_INFO("[INPUT] Starting input parsing.");
+        DBG_INFO("[INPUT] Reset team state.");
+        _friendlyTeam.reset();
+        _enemyTeam.reset();
+        _emptySites.clear();
+        DBG_INFO("Waaaat?");
 
+        std::cin >> _gold >> _touchedSite; std::cin.ignore();
+        DBG_INPUT(_gold << " " << _touchedSite);
+        DBG_INFO("[STRAT] Gold: " << _gold << " touching site: " << _touchedSite);
         int numSites = getNumSites();
+        DBG_INFO("[INPUT] Creating site objects");
         for (auto cntSite = 0; cntSite < numSites; ++cntSite)
         {
             // create derived class object
             std::shared_ptr<Structure> newStructure = Structure::createStructureFromInput(_sInfo);
-
-            // put it in apropriate place
-            if(newStructure->getType() == StructureType::EMPTY_SITE)
+            if(newStructure)
             {
-                _emptySites.emplace_back(std::static_pointer_cast<EmptySite>(newStructure));
+                newStructure->print();
+
+                // put it in apropriate place
+                if(newStructure->getType() == StructureType::EMPTY_SITE)
+                {
+                    _emptySites.emplace_back(std::static_pointer_cast<EmptySite>(newStructure));
+                }
+                else // barracks
+                {
+                    TeamState& targetTeamState = newStructure->getTeam() == 0 ? _friendlyTeam : _enemyTeam;
+
+                    if(newStructure->getType() == StructureType::BARRACKS_ARCHER)
+                    {
+                        targetTeamState.barracksArchers.emplace_back(std::static_pointer_cast<BarracksArchers>(newStructure));
+                    }
+                    else if(newStructure->getType() == StructureType::BARRACKS_KNIGHT)
+                    {
+                        targetTeamState.barracksKnights.emplace_back(std::static_pointer_cast<BarracksKnights>(newStructure));
+                    }
+                }
             }
-            else // barracks
+            else
             {
-                TeamState& targetTeamState = newStructure->getTeam() == 0 ? _friendlyTeam : _enemyTeam;
-
-                if(newStructure->getType() == StructureType::BARRACKS_ARCHER)
-                {
-                    targetTeamState.barracksArchers.emplace_back(std::static_pointer_cast<BarracksArchers>(newStructure));
-                }
-                else if(newStructure->getType() == StructureType::BARRACKS_KNIGHT)
-                {
-                    targetTeamState.barracksKnights.emplace_back(std::static_pointer_cast<BarracksKnights>(newStructure));
-                }
+                DBG_INFO("[ERROR] Can't create structure object.");
             }
         }
+        DBG_INFO("[INPUT] Finished creating site objects.");
 
         int numUnits;
 
         std::cin >> numUnits; std::cin.ignore();
+        DBG_INPUT(numUnits);
 
+        DBG_INFO("[INPUT] Start creating unit objects.");
         for(auto cntUnit = 0; cntUnit < numUnits; ++cntUnit)
         {
             std::shared_ptr<Unit> newUnit = Unit::createUnitFromInput();
@@ -388,13 +420,14 @@ public:
                     break;
             }
         }
+        DBG_INFO("[INPUT] Finished creating unit objects.");
     }
 
-    inline void queenWAIT() { std::cout << "WAIT" << std::endl; }
-    inline void queenMOVE(Position& pos) { std::cout << "MOVE " << pos.x << " " << pos.y << std::endl; }
+    inline void queenWAIT() { std::cout << "WAIT" << std::endl; _queenOrdered = true; }
+    inline void queenMOVE(const Position& pos) { std::cout << "MOVE " << pos.x << " " << pos.y << std::endl; _queenOrdered = true; }
     inline void queenBUILD(int siteId, bool archers = false)
     {
-        std::cout << "BUILD " << siteId << " BARRACKS-" << (archers ? "ARCHER" : "KNIGHT") << std::endl;
+        std::cout << "BUILD " << siteId << " BARRACKS-" << (archers ? "ARCHER" : "KNIGHT") << std::endl; _queenOrdered = true;
     }
 
 
@@ -404,47 +437,96 @@ public:
         if(!_emptySites.empty())
         {
             DBG_INFO("[STRAT] Empty sites exist. We must expand.");
-            // sort the empty places by distance from the queen
-            std::sort(_emptySites.begin(), _emptySites.end(),
-                      [&](const std::shared_ptr<EmptySite>& a,
-                      const std::shared_ptr<EmptySite>& b) -> bool
-            {
-                return _friendlyTeam.queen->distanceTo(*a) > _friendlyTeam.queen->distanceTo(*b);
-            });
 
-            bool buildArchers = false;
-            if(_friendlyTeam.barracksArchers.empty())
+            if(_friendlyTeam.barracksArchers.size() + _friendlyTeam.barracksKnights.size() < 4)
             {
-                DBG_INFO("[STRAT] No archer barracks - let's build some.");
-                buildArchers = true;
+                // sort the empty places by distance from the queen
+                std::sort(_emptySites.begin(), _emptySites.end(),
+                          [&](const std::shared_ptr<EmptySite>& a,
+                          const std::shared_ptr<EmptySite>& b) -> bool
+                {
+                    return _friendlyTeam.queen->distanceTo(*a) > _friendlyTeam.queen->distanceTo(*b);
+                });
+
+                bool buildArchers = false;
+                if(_friendlyTeam.barracksArchers.empty())
+                {
+                    DBG_INFO("[STRAT] No archer barracks - let's build some.");
+                    buildArchers = true;
+                }
+                else
+                {
+                    DBG_INFO("[STRAT] We have archer barracks, so let's make some knights barracks.");
+                }
+
+                queenBUILD(_emptySites.back()->getSiteId(), buildArchers);
             }
             else
             {
-                DBG_INFO("[STRAT] We have archer barracks, so let's make some knights barracks.");
-            }
+                DBG_INFO("[STRAT] We have enough barracks let's avoid those enemy knights");
 
-            queenBUILD(_emptySites.back()->getSiteId(), buildArchers);
+                queenMOVE(_friendlyTeam.barracksArchers[0]->getPosition());
+            }
+        }
+
+        if(!_queenOrdered)
+        {
+            queenWAIT();
         }
 
         DBG_INFO("[STRAT] Current gold: " << _gold);
-        if(_gold > 80)
         {
             std::vector<int> barracksToTrain;
-            DBG_INFO("[STRAT] We have at least 80 gold - we can train units");
-            if(_friendlyTeam.archers.empty() && !_friendlyTeam.barracksArchers.empty() && _gold > 100)
-            {
-                DBG_INFO("[STRAT] We have archers barracks and don't have archers - let's build some...");
-                barracksToTrain.emplace_back(_friendlyTeam.barracksArchers[0]->getSiteId());
-                _gold -= 100;
-            }
+            barracksToTrain.reserve(_friendlyTeam.barracksArchers.size()+_friendlyTeam.barracksKnights.size());
 
-            for(std::shared_ptr<Barracks> currentBarracks : _friendlyTeam.barracksKnights)
+            if(_gold > 80)
             {
-                if(_gold < 80)
-                    break;
-                barracksToTrain.emplace_back(currentBarracks->getSiteId());
-                _gold -= 80;
-                DBG_INFO("[STRAT] We have money for kingts - lets do this shit!");
+                DBG_INFO("[STRAT] We have at least 80 gold - we can train units");
+                bool archersExpiringSoon = !_friendlyTeam.archers.empty() && _friendlyTeam.archers[0]->getHealth() < 20;
+                if(archersExpiringSoon && _gold < 100)
+                {
+                    DBG_INFO("[STRAT] We need to build archers soon - let's save some gold.");
+                    _saveGold = true;
+                }
+
+                if((_friendlyTeam.archers.empty() || archersExpiringSoon) &&
+                    !_friendlyTeam.barracksArchers.empty() && _gold > 100)
+                {
+                    DBG_INFO("[STRAT] We have archers barracks and don't have archers - let's build some...");
+                    if(_friendlyTeam.barracksArchers[0]->getTurnsUntilTrain() > 0)
+                    {
+                        DBG_INFO("[STRAT] We have to wait to train archers for " << _friendlyTeam.barracksArchers[0]->getTurnsUntilTrain() << " more turns.");
+                    }
+                    else
+                    {
+                        barracksToTrain.emplace_back(_friendlyTeam.barracksArchers[0]->getSiteId());
+                        _gold -= 100;
+                    }
+                }
+
+                for(std::shared_ptr<Barracks> currentBarracks : _friendlyTeam.barracksKnights)
+                {
+                    if(_saveGold)
+                    {
+                        DBG_INFO("[STRAT] We need money for archers - pause training of knights.");
+                        break;
+                    }
+                    if(_gold < 80)
+                    {
+                        DBG_INFO("[STRAT] No more money for training knights.");
+                        break;
+                    }
+                    if(currentBarracks->getTurnsUntilTrain() > 0)
+                    {
+                        DBG_INFO("[STRAT] Barracks(" << currentBarracks->getSiteId() << ") has " << currentBarracks->getTurnsUntilTrain() << " more turns until training is available.");
+                        continue;
+                    }
+
+                    barracksToTrain.emplace_back(currentBarracks->getSiteId());
+                    _gold -= 80;
+                    DBG_INFO("[STRAT] We have money for kingts - lets do this shit!");
+                }
+
             }
 
             std::cout << "TRAIN";
@@ -454,24 +536,25 @@ public:
                 {
                     std::cout << " " << id;
                 }
-                std::cout << std::endl;
             }
+            std::cout << std::endl;
+
         }
     }
 
     inline void processOneTurn()
     {
         DBG_INFO("Starting turn " << _currentTurn);
-        auto startTurn = std::chrono::system_clock::now();
+        auto startTurn = std::chrono::high_resolution_clock::now();
         readTurnInput();
         using namespace std::chrono_literals;
-        auto endReadInput = std::chrono::system_clock::now();
-        std::chrono::duration<double> inputTime = std::chrono::duration_cast<std::chrono::milliseconds>(endReadInput-startTurn);
-        DBG_INFO("[TIME] Input : " << inputTime.count());
+        auto endReadInput = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> inputTime = std::chrono::duration_cast<std::chrono::microseconds>(endReadInput-startTurn);
+        DBG_INFO("[TIME] Input : " << std::fixed << inputTime.count());
         takeAction();
-        auto endTurn = std::chrono::system_clock::now();
-        std::chrono::duration<double> actionTime = std::chrono::duration_cast<std::chrono::milliseconds>(endTurn-endReadInput);
-        DBG_INFO("[TIME] Action : " << actionTime.count());
+        auto endTurn = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> actionTime = std::chrono::duration_cast<std::chrono::microseconds>(endTurn-endReadInput);
+        DBG_INFO("[TIME] Action : " << std::fixed << actionTime.count());
         ++_currentTurn;
     }
 
@@ -484,6 +567,8 @@ private:
     TeamState _friendlyTeam;
     TeamState _enemyTeam;
     int _currentTurn;
+    bool _queenOrdered;
+    bool _saveGold;
 };
 
 int main()

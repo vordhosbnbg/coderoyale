@@ -415,6 +415,7 @@ struct TeamState
     std::vector<std::shared_ptr<Mine>> mines;
 };
 
+
 class GameContext
 {
 public:
@@ -674,7 +675,19 @@ public:
                     averageHealthArchers = 100;
                 }
                 bool archersExpiringSoon = !_friendlyTeam.archers.empty() && averageHealthArchers < minAvgArcherHp;
-                bool needArchers = _friendlyTeam.archers.size() < nbArchersMax || archersExpiringSoon;
+                bool enemyIsAggressive = _enemyTeam.knights.size() > 0;
+                if(!enemyIsAggressive)
+                {
+                    for(const std::shared_ptr<BarracksKnights>& barracksPtr: _enemyTeam.barracksKnights)
+                    {
+                        if(barracksPtr->getTurnsUntilTrain() > 0)
+                        {
+                            enemyIsAggressive = true;
+                            break;
+                        }
+                    }
+                }
+                bool needArchers = enemyIsAggressive && (_friendlyTeam.archers.size() < nbArchersMax || archersExpiringSoon);
                 bool needGiants = _friendlyTeam.giants.empty() && _enemyTeam.towers.size() > nbEnemyTowersTriggerGiant;
 
                 DBG_INFO("[STRAT] Need archers - " << needArchers << ", need giants - " << needGiants << ", archersExpiringSoon - " << archersExpiringSoon);

@@ -420,7 +420,16 @@ struct TeamState
 class GameContext
 {
 public:
-    GameContext() : _gold(0), _touchedSite(-1), _currentTurn(0), _queenOrdered(false), _saveGold(0) { _emptySites.reserve(30);}
+    GameContext() :
+        _gold(0),
+        _touchedSite(-1),
+        _currentTurn(0),
+        _queenOrdered(false),
+        _saveGold(0),
+        _queenStartingHp(0)
+    {
+        _emptySites.reserve(30);
+    }
 
     inline void readInit()
     {
@@ -445,7 +454,6 @@ public:
         _friendlyTeam.reset();
         _enemyTeam.reset();
         _emptySites.clear();
-        DBG_INFO("Waaaat?");
 
         std::cin >> _gold >> _touchedSite; std::cin.ignore();
         DBG_INPUT(_gold << " " << _touchedSite);
@@ -555,21 +563,79 @@ public:
         DBG_INFO(text << std::fixed << actionTime.count());
     }
 
+    template<typename ObjectWithPos>
+    inline int getNumberOfUnitsInRange(const std::shared_ptr<ObjectWithPositionAndRadius> target,
+                                       const std::vector<std::shared_ptr<ObjectWithPos>> objects,
+                                       int range)
+    {
+        int retVal = 0;
 
+        for(const std::shared_ptr<ObjectWithPos>& objPtr : objects)
+        {
+            if(target->distanceTo(*objPtr) < range)
+            {
+                ++retVal;
+            }
+        }
+        DBG_INFO("Number of units in range(" << range << ") - " << retVal);
+        return retVal;
+    }
+
+    template<typename ObjectWithPos>
+    inline Position getAveragePosition(const std::vector<std::shared_ptr<ObjectWithPos>> objects)
+    {
+        Position retVal;
+        if(objects.size() > 0)
+        {
+            int avgX = 0;
+            int avgY = 0;
+            for(const std::shared_ptr<ObjectWithPos>& obj : objects)
+            {
+                avgX += obj->getPosition().x;
+                avgY += obj->getPosition().y;
+            }
+            avgX /= objects.size();
+            avgY /= objects.size();
+            retVal.x = avgX;
+            retVal.y = avgY;
+        }
+        return retVal;
+    }
+
+    Position getPivotPosition(const Position& source, const Position& object)
+    {
+        Position retVal;
+
+        retVal.x = source.x - object.x;
+        retVal.y = source.y - object.y;
+
+        if(retVal.x < 0)
+            retVal.x = 0;
+        else if(retVal.x > 1919)
+            retVal.x = 1919;
+
+        if(retVal.y < 0)
+            retVal.y = 0;
+        else if(retVal.y > 999)
+            retVal.y = 999;
+
+        return retVal;
+    }
 
     inline void takeAction()
     {
-        constexpr int avgGoldPerBarracks = 80;
-        constexpr int nbEnemyTowersTriggerGiant = 5;
+        //constexpr int avgGoldPerBarracks = 80;
+        constexpr int nbEnemyTowersTriggerGiant = 6;
         constexpr int nbFriendlyTowersMax = 5;
         constexpr int nbArchersMax = 2;
-        constexpr int nbMinesMin = 4;
-        constexpr int minAvgArcherHp = 30;
+        int nbStartingMines = _queenStartingHp / 20 + 1;
+        constexpr int minAvgArcherHp = 10;
         constexpr int priceOfArchers = 100;
         constexpr int priceOfKnights = 80;
         constexpr int priceOfGiant = 140;
-        constexpr int queenSafeRange = 60;
-        constexpr int towerDesiredHp = 300;
+        constexpr int queenSafeRange = 90;
+        constexpr int towerDesiredHp = 220;
+        //bool twoWaveTactic = true;
 
         measureTime("[TIME] Start take action: ");
         _queenOrdered = false;
@@ -607,7 +673,7 @@ public:
         bool needArchersBarracks = needArchers && _friendlyTeam.barracksArchers.empty();
         bool needGiantsBarracks = needGiants && _friendlyTeam.barracksGiants.empty();
         int neededArchers = neededArchers ? 1 : 0;
-        int neededGiants = neededGiants? 1 : 0;
+        int neededGiants = neededGiants ? 1 : 0;
         int freeGold = _gold - (priceOfArchers * neededArchers + priceOfGiant * neededGiants);
         int currentFreeGoldCapacity = freeGold - priceOfKnights*_friendlyTeam.barracksKnights.size();
         int neededKnightBarracks = currentFreeGoldCapacity / priceOfKnights;
@@ -692,7 +758,7 @@ public:
                 }
             }
             measureTime("[TIME]Upgrade mine evaluation finished -> ");
-            if(!_queenOrdered && queenIsSafe && _friendlyTeam.mines.size() < nbMinesMin)
+            if(!_queenOrdered && queenIsSafe && _friendlyTeam.mines.size() < nbStartingMines)
             {
                 DBG_INFO("[STRAT] Need more mines - lets expand");
                 for(const std::shared_ptr<EmptySite>& site : _emptySites)
@@ -700,8 +766,11 @@ public:
                     site->print();
                     if(site->getGoldAvailable() != 0)
                     {
-                        queenBUILD(site->getSiteId(), StructureType::MINE);
-                        break;
+                        if(getNumberOfUnitsInRange(site, _enemyTeam.knights, 120) == 0)
+                        {
+                            queenBUILD(site->getSiteId(), StructureType::MINE);
+                            break;
+                        }
                     }
                 }
             }
@@ -725,7 +794,23 @@ public:
                     newBarracksType = StructureType::BARRACKS_KNIGHT;
                 }
 
-                queenBUILD(_emptySites.front()->getSiteId(), newBarracksType);
+                bool foundSuitableSite = false;
+                for(std::shared_ptr<EmptySite>& emptySitePtr : _emptySites)
+                {
+                    constexpr int nearbyDistance = 120;
+                    int numberOfKnightsNearby = getNumberOfUnitsInRange(emptySitePtr, _enemyTeam.knights, nearbyDistance);
+                    int numberOfTowersNearby = getNumberOfUnitsInRange(emptySitePtr, _enemyTeam.towers, 200);
+                    if(numberOfKnightsNearby < 2 && numberOfTowersNearby == 0)
+                    {
+                        queenBUILD(emptySitePtr->getSiteId(), newBarracksType);
+                        foundSuitableSite = true;
+                        break;
+                    }
+                }
+                if(!foundSuitableSite)
+                {
+                    queenBUILD(_emptySites.front()->getSiteId(), newBarracksType);
+                }
             }
             measureTime("[TIME]Build barracks evaluation finished -> ");
             if(!_queenOrdered && towersCanBeUpgraded)
@@ -754,6 +839,12 @@ public:
                 queenBUILD(_emptySites.front()->getSiteId(), StructureType::TOWER);
             }
             measureTime("[TIME]Build towers / go to archers barracks evaluation finished -> ");
+            if(!_queenOrdered && getNumberOfUnitsInRange(_friendlyTeam.queen, _enemyTeam.knights, 60) > 1 && !_friendlyTeam.towers.empty())
+            {
+                Position towersAvgPos = getAveragePosition(_friendlyTeam.towers);
+
+                queenMOVE(towersAvgPos);
+            }
         }
         if(!_queenOrdered && !_friendlyTeam.barracksArchers.empty())
         {
@@ -878,6 +969,11 @@ public:
         _startTurn = std::chrono::high_resolution_clock::now();
         readTurnInput();
         measureTime("[TIME] Input -> ");
+        if(_currentTurn == 0)
+        {
+            _queenStartingHp = _friendlyTeam.queen->getHealth();
+            _queenStartPosition = _friendlyTeam.queen->getPosition();
+        }
         takeAction();
         measureTime("[TIME] End of turn -> ");
         ++_currentTurn;
@@ -894,6 +990,8 @@ private:
     int _currentTurn;
     bool _queenOrdered;
     int _saveGold;
+    int _queenStartingHp;
+    Position _queenStartPosition;
     std::chrono::high_resolution_clock::time_point _startTurn;
     std::chrono::high_resolution_clock::time_point _measurePoint;
 };

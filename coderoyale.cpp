@@ -25,6 +25,7 @@
 #define DBG_INFO(x)
 #endif
 
+using namespace std::chrono_literals;
 
 enum class UnitType
 {
@@ -522,30 +523,96 @@ public:
         DBG_INFO("[INPUT] Finished creating unit objects.");
     }
 
-    inline void queenWAIT() { std::cout << "WAIT" << std::endl; _queenOrdered = true; }
-    inline void queenMOVE(const Position& pos) { std::cout << "MOVE " << pos.x << " " << pos.y << std::endl; _queenOrdered = true; }
+    inline void queenWAIT()
+    {
+        if(!_queenOrdered)
+        {
+            std::cout << "WAIT" << std::endl;
+            _queenOrdered = true;
+        }
+    }
+    inline void queenMOVE(const Position& pos)
+    {
+        if(!_queenOrdered)
+        {
+            std::cout << "MOVE " << pos.x << " " << pos.y << std::endl;
+            _queenOrdered = true;
+        }
+    }
     inline void queenBUILD(int siteId, StructureType sType)
     {
-        std::cout << "BUILD " << siteId << " " << structureTypeToString(sType) << std::endl;
-        _queenOrdered = true;
+        if(!_queenOrdered)
+        {
+            std::cout << "BUILD " << siteId << " " << structureTypeToString(sType) << std::endl;
+            _queenOrdered = true;
+        }
+    }
+
+    inline void measureTime(const char* text)
+    {
+        _measurePoint = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> actionTime = std::chrono::duration_cast<std::chrono::microseconds>(_measurePoint-_startTurn);
+        DBG_INFO(text << std::fixed << actionTime.count());
     }
 
 
 
     inline void takeAction()
     {
-        constexpr int avgGoldPerBarracks = 60;
+        constexpr int avgGoldPerBarracks = 80;
         constexpr int nbEnemyTowersTriggerGiant = 5;
-        constexpr int nbFriendlyTowersMax = 4;
+        constexpr int nbFriendlyTowersMax = 5;
         constexpr int nbArchersMax = 2;
-        constexpr int nbMinesMin = 3;
+        constexpr int nbMinesMin = 4;
         constexpr int minAvgArcherHp = 30;
         constexpr int priceOfArchers = 100;
         constexpr int priceOfKnights = 80;
         constexpr int priceOfGiant = 140;
+        constexpr int queenSafeRange = 60;
+        constexpr int towerDesiredHp = 300;
 
+        measureTime("[TIME] Start take action: ");
         _queenOrdered = false;
         _saveGold = 0;
+        int averageHealthArchers = 0;
+        for(const std::shared_ptr<Archer>& archerPtr : _friendlyTeam.archers)
+        {
+            averageHealthArchers+= archerPtr->getHealth();
+        }
+        if(_friendlyTeam.archers.size() > 0)
+        {
+            averageHealthArchers /= _friendlyTeam.archers.size();
+            DBG_INFO("[STRAT] Average health of archers - " << averageHealthArchers);
+        }
+        else
+        {
+            averageHealthArchers = 100;
+        }
+        bool archersExpiringSoon = !_friendlyTeam.archers.empty() && averageHealthArchers < minAvgArcherHp;
+        bool enemyIsAggressive = _enemyTeam.knights.size() > 0;
+        if(!enemyIsAggressive)
+        {
+            for(const std::shared_ptr<BarracksKnights>& barracksPtr: _enemyTeam.barracksKnights)
+            {
+                if(barracksPtr->getTurnsUntilTrain() > 0)
+                {
+                    enemyIsAggressive = true;
+                    break;
+                }
+            }
+        }
+        bool needArchers = enemyIsAggressive && (_friendlyTeam.archers.size() < nbArchersMax || archersExpiringSoon);
+        bool needGiants = _friendlyTeam.giants.empty() && _enemyTeam.towers.size() > nbEnemyTowersTriggerGiant;
+
+        bool needArchersBarracks = needArchers && _friendlyTeam.barracksArchers.empty();
+        bool needGiantsBarracks = needGiants && _friendlyTeam.barracksGiants.empty();
+        int neededArchers = neededArchers ? 1 : 0;
+        int neededGiants = neededGiants? 1 : 0;
+        int freeGold = _gold - (priceOfArchers * neededArchers + priceOfGiant * neededGiants);
+        int currentFreeGoldCapacity = freeGold - priceOfKnights*_friendlyTeam.barracksKnights.size();
+        int neededKnightBarracks = currentFreeGoldCapacity / priceOfKnights;
+        bool needKnightsBarracks = _friendlyTeam.barracksKnights.size() < neededKnightBarracks;
+
         if(!_emptySites.empty())
         {
             DBG_INFO("[STRAT] Empty sites exist.");
@@ -558,6 +625,7 @@ public:
             {
                 return _friendlyTeam.queen->distanceTo(*a) < _friendlyTeam.queen->distanceTo(*b);
             });
+            measureTime("[TIME] End empty site sort: ");
 
             bool minesCanBeUpgraded = false;
             for(const std::shared_ptr<Mine>& minePtr : _friendlyTeam.mines)
@@ -569,27 +637,40 @@ public:
                 }
             }
 
-            if(_friendlyTeam.mines.size() < nbMinesMin)
+            bool towersCanBeUpgraded = false;
+            for(const std::shared_ptr<Tower>& towerPtr : _friendlyTeam.towers)
             {
-                DBG_INFO("[STRAT] Need more mines - lets expand");
-                for(const std::shared_ptr<EmptySite>& site : _emptySites)
+                if(towerPtr->getHealth() < towerDesiredHp)
                 {
-                    site->print();
-                    if(site->getGoldAvailable() != 0)
-                    {
-                        queenBUILD(_emptySites.front()->getSiteId(), StructureType::MINE);
-                        break;
-                    }
+                    towersCanBeUpgraded = true;
+                    break;
                 }
             }
-            else if(_friendlyTeam.towers.size() < nbFriendlyTowersMax)
+
+            bool queenIsSafe = true;
+            if(!_enemyTeam.knights.empty())
             {
-                queenBUILD(_emptySites.front()->getSiteId(), StructureType::TOWER);
+                // sort the enemy knigts by distance from the queen
+                measureTime("[STRAT] Sorting knights by distance to our queen -> ");
+                std::sort(_enemyTeam.knights.begin(), _enemyTeam.knights.end(),
+                          [&](const std::shared_ptr<Knight>& a,
+                          const std::shared_ptr<Knight>& b) -> bool
+                {
+                    return _friendlyTeam.queen->distanceTo(*a) < _friendlyTeam.queen->distanceTo(*b);
+                });
+                if(_friendlyTeam.queen->distanceTo(*_enemyTeam.knights.front()) < queenSafeRange)
+                {
+                    DBG_INFO("[STRAT]A knight is close to our queen - she is not safe");
+                    queenIsSafe = false;
+                }
             }
-            else if(minesCanBeUpgraded)
+            measureTime("[STRAT] Queen safety evaluated -> ");
+
+
+            if(!_queenOrdered && queenIsSafe && minesCanBeUpgraded)
             {
                 // sort the empty places by distance from the queen
-                DBG_INFO("[STRAT] Sorting mines by distance to our queen...");
+                DBG_INFO("[STRAT] Sorting mines by distance to our queen");
                 std::sort(_friendlyTeam.mines.begin(), _friendlyTeam.mines.end(),
                           [&](const std::shared_ptr<Mine>& a,
                           const std::shared_ptr<Mine>& b) -> bool
@@ -604,25 +685,41 @@ public:
                         DBG_INFO("Mine with id (" << minePtr->getSiteId() << ") is level "
                                  << minePtr->getMineSize() << " of " << minePtr->getMaxMineSize()
                                  << ", attempting to upgrade.");
+
                         queenBUILD(minePtr->getSiteId(), StructureType::MINE);
                         break;
                     }
                 }
             }
-            else if(_friendlyTeam.barracksArchers.size() + _friendlyTeam.barracksKnights.size() + _friendlyTeam.barracksGiants.size() < (_gold / avgGoldPerBarracks))
+            measureTime("[TIME]Upgrade mine evaluation finished -> ");
+            if(!_queenOrdered && queenIsSafe && _friendlyTeam.mines.size() < nbMinesMin)
+            {
+                DBG_INFO("[STRAT] Need more mines - lets expand");
+                for(const std::shared_ptr<EmptySite>& site : _emptySites)
+                {
+                    site->print();
+                    if(site->getGoldAvailable() != 0)
+                    {
+                        queenBUILD(site->getSiteId(), StructureType::MINE);
+                        break;
+                    }
+                }
+            }
+            measureTime("[TIME]Build mine evaluation finished -> ");
+            if(!_queenOrdered && (needKnightsBarracks || needArchersBarracks || needGiantsBarracks))
             {
                 StructureType newBarracksType = StructureType::BARRACKS_KNIGHT;
-                if(_friendlyTeam.barracksArchers.empty())
+                if(_friendlyTeam.barracksArchers.empty() && needArchersBarracks)
                 {
                     DBG_INFO("[STRAT] No archer barracks - let's build some.");
                     newBarracksType = StructureType::BARRACKS_ARCHER;
                 }
-                else if(_friendlyTeam.barracksGiants.empty() && _enemyTeam.towers.size() > nbEnemyTowersTriggerGiant)
+                if(_friendlyTeam.barracksGiants.empty() && needGiantsBarracks)
                 {
                     DBG_INFO("[STRAT] Enemy team has more than " << nbEnemyTowersTriggerGiant << " towers - lets create some giant barracks.");
                     newBarracksType = StructureType::BARRACKS_GIANT;
                 }
-                else
+                else if (needKnightsBarracks)
                 {
                     DBG_INFO("[STRAT] We have enough money so let's make some knights barracks.");
                     newBarracksType = StructureType::BARRACKS_KNIGHT;
@@ -630,16 +727,35 @@ public:
 
                 queenBUILD(_emptySites.front()->getSiteId(), newBarracksType);
             }
-            else
+            measureTime("[TIME]Build barracks evaluation finished -> ");
+            if(!_queenOrdered && towersCanBeUpgraded)
             {
-                DBG_INFO("[STRAT] We have enough barracks let's avoid those enemy knights");
-
-                queenMOVE(_friendlyTeam.barracksArchers[0]->getPosition());
+                // sort the friendly towers by distance from the queen
+                DBG_INFO("[STRAT] Sorting friendly towers by distance to our queen...");
+                std::sort(_friendlyTeam.towers.begin(), _friendlyTeam.towers.end(),
+                          [&](const std::shared_ptr<Tower>& a,
+                          const std::shared_ptr<Tower>& b) -> bool
+                {
+                    return _friendlyTeam.queen->distanceTo(*a) < _friendlyTeam.queen->distanceTo(*b);
+                });
+                for(std::shared_ptr<Tower>& towerPtr : _friendlyTeam.towers)
+                {
+                    if(towerPtr->getHealth() < towerDesiredHp)
+                    {
+                        queenBUILD(towerPtr->getSiteId(), StructureType::TOWER);
+                        break;
+                    }
+                }
             }
+            measureTime("[TIME]Upgrade towers evaluation finished -> ");
 
-
+            if(!_queenOrdered && _friendlyTeam.towers.size() < nbFriendlyTowersMax)
+            {
+                queenBUILD(_emptySites.front()->getSiteId(), StructureType::TOWER);
+            }
+            measureTime("[TIME]Build towers / go to archers barracks evaluation finished -> ");
         }
-        else
+        if(!_queenOrdered && !_friendlyTeam.barracksArchers.empty())
         {
             DBG_INFO("[STRAT] We have enough barracks let's avoid those enemy knights");
 
@@ -650,6 +766,8 @@ public:
         {
             queenWAIT();
         }
+        measureTime("[TIME] Start training evaluation -> ");
+
 
         DBG_INFO("[STRAT] Evaluating training opportunities - current gold: " << _gold);
         {
@@ -660,35 +778,6 @@ public:
             {
                 DBG_INFO("[STRAT] We have at least 80 gold - we can train units");
 
-                int averageHealthArchers = 0;
-                for(const std::shared_ptr<Archer>& archerPtr : _friendlyTeam.archers)
-                {
-                    averageHealthArchers+= archerPtr->getHealth();
-                }
-                if(_friendlyTeam.archers.size() > 0)
-                {
-                    averageHealthArchers /= _friendlyTeam.archers.size();
-                    DBG_INFO("[STRAT] Average health of archers - " << averageHealthArchers);
-                }
-                else
-                {
-                    averageHealthArchers = 100;
-                }
-                bool archersExpiringSoon = !_friendlyTeam.archers.empty() && averageHealthArchers < minAvgArcherHp;
-                bool enemyIsAggressive = _enemyTeam.knights.size() > 0;
-                if(!enemyIsAggressive)
-                {
-                    for(const std::shared_ptr<BarracksKnights>& barracksPtr: _enemyTeam.barracksKnights)
-                    {
-                        if(barracksPtr->getTurnsUntilTrain() > 0)
-                        {
-                            enemyIsAggressive = true;
-                            break;
-                        }
-                    }
-                }
-                bool needArchers = enemyIsAggressive && (_friendlyTeam.archers.size() < nbArchersMax || archersExpiringSoon);
-                bool needGiants = _friendlyTeam.giants.empty() && _enemyTeam.towers.size() > nbEnemyTowersTriggerGiant;
 
                 DBG_INFO("[STRAT] Need archers - " << needArchers << ", need giants - " << needGiants << ", archersExpiringSoon - " << archersExpiringSoon);
                 if(needArchers && getAvailableGold() < priceOfArchers)
@@ -780,23 +869,17 @@ public:
                 }
             }
             std::cout << std::endl;
-
         }
     }
 
     inline void processOneTurn()
     {
         DBG_INFO("Starting turn " << _currentTurn);
-        auto startTurn = std::chrono::high_resolution_clock::now();
+        _startTurn = std::chrono::high_resolution_clock::now();
         readTurnInput();
-        using namespace std::chrono_literals;
-        auto endReadInput = std::chrono::high_resolution_clock::now();
-        std::chrono::duration<double> inputTime = std::chrono::duration_cast<std::chrono::microseconds>(endReadInput-startTurn);
-        DBG_INFO("[TIME] Input : " << std::fixed << inputTime.count());
+        measureTime("[TIME] Input -> ");
         takeAction();
-        auto endTurn = std::chrono::high_resolution_clock::now();
-        std::chrono::duration<double> actionTime = std::chrono::duration_cast<std::chrono::microseconds>(endTurn-endReadInput);
-        DBG_INFO("[TIME] Action : " << std::fixed << actionTime.count());
+        measureTime("[TIME] End of turn -> ");
         ++_currentTurn;
     }
 
@@ -811,6 +894,8 @@ private:
     int _currentTurn;
     bool _queenOrdered;
     int _saveGold;
+    std::chrono::high_resolution_clock::time_point _startTurn;
+    std::chrono::high_resolution_clock::time_point _measurePoint;
 };
 
 int main()
